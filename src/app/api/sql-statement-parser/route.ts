@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { S3Client, ListBucketsCommand, HeadObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
-import csv from 'csv-parser';
+import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { Readable } from "stream";
 
-const s3Basepath = process.env.S3_BUCKET_PART;
 
 const s3Client = new S3Client({ 
     region: process.env.S3_UPLOAD_REGION,
@@ -13,15 +11,60 @@ const s3Client = new S3Client({
     },
 });
 
+async function parseChunk(chunk: string) {
+    const lines = chunk.split('\n');
+    let nmi: string | null = null;
+    const sqlStatements = [];
+
+    for (const line of lines) {
+        if (line.trim() === '') continue; // Skip empty lines
+
+        const parts = line.split(',');
+
+        switch (parts[0]) {
+            case '100':
+                nmi = parts[3]; // Extract NMI
+                break;
+            case '300':
+                if (nmi) {
+                    const dateStr = parts[1];
+                    const year = dateStr.substring(0, 4);
+                    const month = dateStr.substring(4, 6);
+                    const day = dateStr.substring(6, 8);
+                    const timestamp = new Date(`${year}-${month}-${day}T00:00:00.000Z`); // Construct timestamp (UTC)
+
+                    // Assuming consumption values start from index 14
+                    for (let i = 14; i < parts.length -1; i++) { // Correctly iterate up to second to last value
+                        const consumption = parseFloat(parts[i]);
+                        if (!isNaN(consumption)) {
+                            const insertStatement = `INSERT INTO meter_readings ("nmi", "timestamp", "consumption") VALUES ('${nmi}', '${timestamp.toISOString()}', ${consumption});`;
+                            sqlStatements.push(insertStatement);
+                        }
+                    }
+                }
+                break;
+            // Handle other record types (200, 500, 900) if needed for NMI or other data
+            case '200':
+                if (parts[2]) {
+                    nmi = parts[2];
+                }
+                break;
+        }
+    }
+
+    console.log('SQL statements', sqlStatements)
+    return sqlStatements.join('\n'); // Return the SQL statements as a single string
+}
+
+
 export async function POST(request: NextRequest) {
     try{
         const body = await request.json();
         const filename = body['filename'];
-        const csvFilepath = `${s3Basepath}${filename}`;
 
         const params = {
             Bucket: process.env.S3_UPLOAD_BUCKET,
-            Key: `next-s3-uploads/${filename}`,
+            Key: filename,
         };
 
         // downloads CSV
@@ -32,57 +75,80 @@ export async function POST(request: NextRequest) {
         }
 
         // parses it into JSON with readable SQL statements
-        // Cast needed here as node complains about Body not being a stream otherwise
-    // Important: Use a TextDecoder to handle the stream of data
-    const decoder = new TextDecoder('utf-8'); // Assuming UTF-8 encoding
+        
+        // Important: Use a TextDecoder to handle the stream of data
+        const decoder = new TextDecoder('utf-8'); // Assuming UTF-8 encoding
 
-    let remaining = ''; // Store any incomplete lines
-    const streamBody: Readable = data.Body;
+        let remaining = ''; // Store any incomplete lines
+        
+        // @ts-expect-error: Typing error: This is a Readable
+        const streamBody: Readable = data.Body;
+        const nemChunks: string[] = [];
+        const parsedStatements: Promise<string>[] = [];
 
-    streamBody.on('data', (chunk) => {
-    const chunkString = decoder.decode(chunk); // Decode the chunk to a string
-    const lines = (remaining + chunkString).split(/\r\n|\n|\r/); // Split into lines
+        streamBody.on('data', (chunk) => {
+            const chunkString = decoder.decode(chunk); // Decode the chunk to a string
+            const lines = (remaining + chunkString).split(/\r\n|\n|\r/); // Split into lines
 
-    remaining = lines.pop(); // The last element might be an incomplete line
+            remaining = lines.pop() ?? ''; // The last element might be an incomplete line
 
-    for (const line of lines) {
-        if (line.trim() !== '') { // Skip empty lines
-        // Process each line here:
-        console.log(line); // Example: Log each line
+            for (const line of lines) {
+                if (line.trim() !== '') { // Skip empty lines
+                    const parts = line.split(',');
+                    console.log("POARTS", parts, line)
+                    if (parts.at(0) === '100') {
+                        nemChunks.push(line + '\n');
+                        if (nemChunks.length > 1) {
+                            parsedStatements.push(parseChunk(nemChunks.shift() ?? ''))
+                        }
+                    } else {
+                        nemChunks[nemChunks.length - 1] = nemChunks.at(-1) + line + '\n';
+                    }
+                }
+                console.log('nemchunks?', nemChunks);
+            }
+        });
 
-        // If you need to send data to the client, you can do it here, but be mindful of the volume of data
-        // Example: res.write(JSON.stringify({ data: line }) + '\n'); // Send each line as JSON
-        }
-    }
-    });
+        streamBody.on('end', async () => {
+            if (remaining.trim() !== '') {
+                nemChunks[nemChunks.length - 1] = nemChunks[nemChunks.length - 1] + remaining;
+            }
 
-    streamBody.on('end', () => {
-    if (remaining.trim() !== '') {
-        // Process any remaining line
-        console.log(remaining);
+            if (nemChunks.length > 0) { // Make sure there's at least one chunk to process
+                parsedStatements.push(parseChunk(nemChunks.shift() ?? ''));
+            }
 
-        // If you're sending data to the client:
-        // res.write(JSON.stringify({ data: remaining }) + '\n');
-    }
+            const resolvedStatements = await Promise.all(parsedStatements); // Resolve all promises
 
-   // If you're sending data to the client, you must call res.end() to finish the response
-   // res.end();
+            const allSQL = resolvedStatements.join('\n');  // Combine all SQL statements
+        
+            const jsonOutput = JSON.stringify({ sql: allSQL }, null, 2); // Wrap SQL in a JSON object
+        
+            const uploadParams = {
+                Bucket: process.env.S3_UPLOAD_BUCKET,
+                Key: `${filename}.json`, // New key for the JSON file
+                Body: jsonOutput, // The JSON string
+                ContentType: 'application/json', // Set correct content type
+            };
 
-        console.log('CSV reading complete');
-    });
+            const putCommand = new PutObjectCommand(uploadParams);
+            await s3Client.send(putCommand);
 
-    streamBody.on('error', (err) => {
-        console.error('Error reading CSV:', err);
-    });
+            console.log('CSV reading and JSON upload complete');
+            return NextResponse.json({ message: 'CSV processing and JSON upload complete' }, { status: 200 });
+        });
 
+        streamBody.on('error', (err) => {
+            throw new Error(err.message);
+        });
 
-        // re-uploads
-        // const parsedFilepath = `${s3Basepath}/${filename}.json`;
         return NextResponse.json({message: ''}, {status: 200});
     } catch (error) {
         return NextResponse.json({
             message: "Error",
-            error
+            error,   
+        }, {
+            status: 404
         })
     }
     

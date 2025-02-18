@@ -1,62 +1,40 @@
 'use client';
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useS3Upload } from "next-s3-upload";
 import { CheckmarkIcon, LoadingIcon } from "./icons/icons";
-
-const uploadFolder = process.env.NEXT_PUBLIC_UPLOAD_FOLDER ?? '';
+import { BaseProps } from "./interface";
 
 type Props = {
-  onUploaded?: (filename: string) => void;
-}
+  onUploaded?: (url: string, key: string) => void;
+} & BaseProps;
 
 export default function FileUploadComponent({ 
-  onUploaded
+  onUploaded,
+  classnames,
+  ...props
 }: Props) {
   const [uploadUrl, setUploadUrl] = useState<string>();
-  const [loading, setLoading] = useState<boolean>(true);
-  const { FileInput, openFileDialog, uploadToS3, files} = useS3Upload();
+  const [loading, setLoading] = useState<boolean>(false);
+  const { FileInput, openFileDialog, uploadToS3} = useS3Upload();
 
-  // @ts-expect-error: file typing any
+  // @ts-expect-error: file typing
   const handleFileChange = async (file) => {
     setLoading(true);
-    const { url } = await uploadToS3(file);
+    const { url, key } = await uploadToS3(file);
     setUploadUrl(url);
+    onUploaded?.(url, key);
     setLoading(false);
   };
 
-  useEffect(() => {
-    if (uploadUrl) {
-      const fileparts = uploadUrl.split(uploadFolder);
-      onUploaded?.(fileparts[1]);
-    }
-    console.log(uploadUrl);
-  }, [uploadUrl, onUploaded])
-
   return (
-    <div>
-        <div className="flex gap-2">
-            <FileInput onChange={handleFileChange} />
+    <div className={"flex items-center justify-center "} {...props}>
+        <FileInput onChange={handleFileChange} />
 
-            <button onClick={openFileDialog}>Upload file</button>
-        
-            {loading &&
-              <div className="flex">
-                <LoadingIcon />
-                <div className="pt-8">
-                  {files.map((file, index) => (
-                    <div key={index}>
-                      File #{index} progress: {file.progress}%
-                    </div>
-                  ))}
-                </div>
-              </div>
-            }
-
-            
-            {uploadUrl && <CheckmarkIcon />}
-        </div>
-        {uploadUrl && <p>file uploaded to {uploadUrl}</p>}
-      </div>
+        <button onClick={openFileDialog} className={classnames}>UPLOAD CSV</button>
+    
+        {loading &&  <LoadingIcon /> }
+        {uploadUrl && <CheckmarkIcon classnames="mb-2" />}
+    </div>
   );
 }
