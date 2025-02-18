@@ -10,6 +10,8 @@
     - We then get the parsed file URL from backend, download that resource and display that on the frontend instead since we can now reasonably expect it to be smaller.
 - Display format
     - Since we're displaying SQL statements, we'll want to display it in a markdown format, separated by "CREATE" or "INSERT" statements, which can then be scrolled and collapsed on a file-basis
+- State management
+    - Normally, 
 
 ### Backend
 - NextJS's API routes can take the place of a lightweight backend.
@@ -35,7 +37,10 @@
 ## Explaining the CSV
 - 100 seems to be the headers
 - 900 indicates end of file
-- we thus split the csv into 100-900 chunks
+- information required for INSERT statements seem to all be from 200, 300, and 500 statements
+- Initial provided CREATE TABLE statement seems to be missing fields
+    - `constraint meter_readings_unique_consumption UNIQUE ("nmi", "timestamp")` necessarily would be violated if there are 2 or more meters since they have the same nmi
+- Since this is a frontend-focused task, with only 1 sample csv, there isn't enough data to confirm nor deny assumptions. Am going to leave this alone.
 
 
 

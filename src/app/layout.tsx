@@ -1,6 +1,9 @@
-import type { Metadata } from "next";
+'use client';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import Head from 'next/head';
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -12,11 +15,7 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-export const metadata: Metadata = {
-  title: "NEM CSV Parser",
-  description: "NEM CSV parser for a technical assessment by Flo energy",
-};
-
+const queryClient = new QueryClient();
 
 export default function RootLayout({
   children,
@@ -25,10 +24,14 @@ export default function RootLayout({
 }>) {
   return (
       <html lang="en">
+        <Head>
+          <title>NEM CSV Parser</title>
+          <meta property='og:title' content='NEM CSV Parser' />
+        </Head>
         <body
           className={`${geistSans.variable} ${geistMono.variable} antialiased`}
         >
-          {children}
+          <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
         </body>
       </html>
   );
